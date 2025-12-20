@@ -1,0 +1,40 @@
+{
+    "name": "cogniwiss",
+    "version": "0.1.0",
+    "description": "Cogniwiss AI Code Intelligence CLI",
+    "homepage": "https://cogniwiss.ai",
+    "repository": {
+        "type": "git",
+        "url": "https://github.com/cogniwiss/cogniwiss-cli-dist"
+    },
+    "author": "CogniWiss Technologies",
+    "license": "MIT",
+    "bin": {
+        "cogniwiss": "bin/cogniwiss.js"
+    },
+    "keywords": [
+        "cli",
+        "ai",
+        "code",
+        "intelligence",
+        "cogniwiss"
+    ],
+    "engines": {
+        "node": ">=14.0.0"
+    },
+    "os": [
+        "darwin",
+        "linux",
+        "win32"
+    ],
+    "cpu": [
+        "x64",
+        "arm64"
+    ],
+    "files": [
+        "bin/",
+        "native/",
+        "README.md",
+        "LICENSE"
+    ]
+}

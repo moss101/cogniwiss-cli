@@ -1,0 +1,29 @@
+# Dependencies
+node_modules/
+
+# Build artifacts
+*.tgz
+*.tar.gz
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Logs
+*.log
+npm-debug.log*
+
+# Environment
+.env
+.env.local
+
+# Native binaries (added via CI, not committed)
+native/cogniwiss-*
+!native/README.md
+!native/.gitkeep
