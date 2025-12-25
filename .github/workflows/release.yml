@@ -76,8 +76,8 @@ jobs:
       - name: Checkout CLI source
         uses: actions/checkout@v4
         with:
-          repository: cogniwiss/cogniwiss-cli
-          token: ${{ secrets.CLI_REPO_TOKEN }}
+          repository: moss101/cogniwiss-cli
+          token: ${{ secrets.GITHUB_TOKEN }}
           path: cogniwiss-cli
 
       - name: Setup Python
