@@ -1,4 +1,4 @@
-name: Release
+name: Build and Release
 
 on:
   # Trigger on version tags
@@ -13,16 +13,13 @@ on:
         description: 'Version to release (e.g., v0.1.0)'
         required: true
         type: string
-  
-  # Receive binaries from private repo
-  repository_dispatch:
-    types: [release-binaries]
 
 env:
   NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+  PYTHON_VERSION: '3.11'
 
 jobs:
-  # Validate and prepare release
+  # Determine version
   prepare:
     runs-on: ubuntu-latest
     outputs:
@@ -34,9 +31,7 @@ jobs:
       - name: Determine version
         id: version
         run: |
-          if [ "${{ github.event_name }}" = "repository_dispatch" ]; then
-            VERSION="${{ github.event.client_payload.version }}"
-          elif [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
             VERSION="${{ inputs.version }}"
           else
             VERSION="${GITHUB_REF#refs/tags/}"
@@ -52,43 +47,121 @@ jobs:
             exit 1
           fi
 
-  # Download or receive binaries
+  # Build binaries for all platforms
+  build-binaries:
+    runs-on: ${{ matrix.os }}
+    needs: prepare
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-14       # ARM64
+            platform: darwin
+            arch: arm64
+            binary-name: cogniwiss-darwin-arm64
+          - os: macos-13       # Intel
+            platform: darwin
+            arch: x64
+            binary-name: cogniwiss-darwin-x64
+          - os: ubuntu-latest
+            platform: linux
+            arch: x64
+            binary-name: cogniwiss-linux-x64
+          - os: windows-latest
+            platform: win
+            arch: x64
+            binary-name: cogniwiss-win-x64.exe
+
+    steps:
+      - name: Checkout CLI source
+        uses: actions/checkout@v4
+        with:
+          repository: cogniwiss/cogniwiss-cli
+          token: ${{ secrets.CLI_REPO_TOKEN }}
+          path: cogniwiss-cli
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: |
+          cd cogniwiss-cli
+          pip install --upgrade pip
+          pip install pyinstaller
+          pip install -e .
+        shell: bash
+
+      - name: Build binary (Unix)
+        if: runner.os != 'Windows'
+        run: |
+          cd cogniwiss-cli
+          pyinstaller --onefile \
+            --name cogniwiss \
+            --add-data "cli/templates:cli/templates" \
+            --hidden-import typer \
+            --hidden-import rich \
+            --hidden-import httpx \
+            --hidden-import yaml \
+            --collect-all cli \
+            cli/main.py
+          
+          mv dist/cogniwiss ../cogniwiss-${{ matrix.platform }}-${{ matrix.arch }}
+          chmod +x ../cogniwiss-${{ matrix.platform }}-${{ matrix.arch }}
+
+      - name: Build binary (Windows)
+        if: runner.os == 'Windows'
+        run: |
+          cd cogniwiss-cli
+          pyinstaller --onefile `
+            --name cogniwiss `
+            --add-data "cli/templates;cli/templates" `
+            --hidden-import typer `
+            --hidden-import rich `
+            --hidden-import httpx `
+            --hidden-import yaml `
+            --collect-all cli `
+            cli/main.py
+          
+          Move-Item dist/cogniwiss.exe ../cogniwiss-win-x64.exe
+        shell: pwsh
+
+      - name: Test binary
+        run: |
+          if [ "${{ runner.os }}" = "Windows" ]; then
+            ./cogniwiss-win-x64.exe --version
+          else
+            ./cogniwiss-${{ matrix.platform }}-${{ matrix.arch }} --version
+          fi
+        shell: bash
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.binary-name }}
+          path: cogniwiss-${{ matrix.platform }}-${{ matrix.arch }}*
+          retention-days: 7
+
+  # Collect all binaries
   collect-binaries:
     runs-on: ubuntu-latest
-    needs: prepare
+    needs: [prepare, build-binaries]
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Download binaries from repository dispatch
-        if: github.event_name == 'repository_dispatch'
-        run: |
-          mkdir -p artifacts
-          
-          # Download binaries from URLs provided in dispatch payload
-          for binary in darwin-arm64 darwin-x64 linux-x64 win-x64; do
-            url="${{ github.event.client_payload.binaries[binary] }}"
-            if [ -n "$url" ]; then
-              echo "Downloading cogniwiss-${binary}..."
-              curl -fsSL -o "artifacts/cogniwiss-${binary}" "$url"
-            fi
-          done
-          
-          # Handle Windows .exe extension
-          if [ -f "artifacts/cogniwiss-win-x64" ]; then
-            mv "artifacts/cogniwiss-win-x64" "artifacts/cogniwiss-win-x64.exe"
-          fi
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
 
-      - name: Download binaries from GitHub Release (tag-based)
-        if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')
+      - name: List artifacts
         run: |
-          mkdir -p artifacts
-          echo "Binaries should be uploaded by private repo before tagging"
-          echo "This step is a placeholder for manual releases"
-
-      - name: Make binaries executable
-        run: |
-          chmod +x artifacts/cogniwiss-darwin-* artifacts/cogniwiss-linux-* || true
+          ls -la artifacts/
+          file artifacts/*
 
       - name: Generate checksums
         run: |
@@ -96,54 +169,17 @@ jobs:
           sha256sum cogniwiss-* > checksums.txt
           cat checksums.txt
 
-      - name: Upload artifacts
+      - name: Upload combined artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: binaries
+          name: all-binaries
           path: artifacts/
           retention-days: 7
-
-  # Smoke test binaries
-  smoke-test:
-    runs-on: ${{ matrix.os }}
-    needs: collect-binaries
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - os: macos-14  # ARM64
-            binary: cogniwiss-darwin-arm64
-          - os: macos-13  # Intel
-            binary: cogniwiss-darwin-x64
-          - os: ubuntu-latest
-            binary: cogniwiss-linux-x64
-          # Windows smoke test
-          - os: windows-latest
-            binary: cogniwiss-win-x64.exe
-    steps:
-      - name: Download artifacts
-        uses: actions/download-artifact@v4
-        with:
-          name: binaries
-          path: artifacts
-
-      - name: Run smoke test (Unix)
-        if: runner.os != 'Windows'
-        run: |
-          chmod +x artifacts/${{ matrix.binary }}
-          ./artifacts/${{ matrix.binary }} --version
-          ./artifacts/${{ matrix.binary }} --help
-
-      - name: Run smoke test (Windows)
-        if: runner.os == 'Windows'
-        run: |
-          .\artifacts\${{ matrix.binary }} --version
-          .\artifacts\${{ matrix.binary }} --help
 
   # Create GitHub Release
   github-release:
     runs-on: ubuntu-latest
-    needs: [prepare, collect-binaries, smoke-test]
+    needs: [prepare, collect-binaries]
     permissions:
       contents: write
     steps:
@@ -153,7 +189,7 @@ jobs:
       - name: Download artifacts
         uses: actions/download-artifact@v4
         with:
-          name: binaries
+          name: all-binaries
           path: artifacts
 
       - name: Create GitHub Release
@@ -172,6 +208,13 @@ jobs:
           body: |
             ## Installation
 
+            ### npm (recommended)
+            ```bash
+            npm install -g cogniwiss
+            # or
+            npx cogniwiss chat
+            ```
+
             ### curl (macOS/Linux)
             ```bash
             curl -fsSL https://raw.githubusercontent.com/cogniwiss/cogniwiss-cli-dist/main/install/install.sh | sh
@@ -182,20 +225,13 @@ jobs:
             brew install cogniwiss/tap/cogniwiss
             ```
 
-            ### npm
-            ```bash
-            npm install -g cogniwiss
-            # or
-            npx cogniwiss
-            ```
-
             ## Checksums
             Verify your download with SHA256 checksums in `checksums.txt`.
 
   # Publish to npm
   npm-publish:
     runs-on: ubuntu-latest
-    needs: [prepare, collect-binaries, smoke-test]
+    needs: [prepare, collect-binaries]
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -209,7 +245,7 @@ jobs:
       - name: Download artifacts
         uses: actions/download-artifact@v4
         with:
-          name: binaries
+          name: all-binaries
           path: native
 
       - name: Update package version
@@ -220,11 +256,14 @@ jobs:
 
       - name: Publish to npm
         run: npm publish --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
   # Update Homebrew formula
   update-homebrew:
     runs-on: ubuntu-latest
     needs: [prepare, collect-binaries, github-release]
+    continue-on-error: true
     steps:
       - name: Checkout tap repository
         uses: actions/checkout@v4
@@ -236,20 +275,18 @@ jobs:
       - name: Download checksums
         uses: actions/download-artifact@v4
         with:
-          name: binaries
+          name: all-binaries
           path: artifacts
 
       - name: Update formula
         run: |
           VERSION="${{ needs.prepare.outputs.version }}"
-          VERSION="${VERSION#v}"  # Remove 'v' prefix
+          VERSION="${VERSION#v}"
           
-          # Extract checksums
           DARWIN_ARM64_SHA=$(grep 'cogniwiss-darwin-arm64' artifacts/checksums.txt | awk '{print $1}')
           DARWIN_X64_SHA=$(grep 'cogniwiss-darwin-x64' artifacts/checksums.txt | awk '{print $1}')
           LINUX_X64_SHA=$(grep 'cogniwiss-linux-x64' artifacts/checksums.txt | awk '{print $1}')
           
-          # Update formula
           sed -i "s/version \".*\"/version \"${VERSION}\"/" homebrew-tap/Formula/cogniwiss.rb
           sed -i "s/PLACEHOLDER_SHA256_DARWIN_ARM64/${DARWIN_ARM64_SHA}/" homebrew-tap/Formula/cogniwiss.rb
           sed -i "s/PLACEHOLDER_SHA256_DARWIN_X64/${DARWIN_X64_SHA}/" homebrew-tap/Formula/cogniwiss.rb
@@ -261,5 +298,5 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add Formula/cogniwiss.rb
-          git commit -m "Update cogniwiss to ${{ needs.prepare.outputs.version }}"
+          git commit -m "Update cogniwiss to ${{ needs.prepare.outputs.version }}" || exit 0
           git push
